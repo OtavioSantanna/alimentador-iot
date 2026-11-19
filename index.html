@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alimentador do Cachorro</title>
+  <!-- Biblioteca MQTT.js: permite ao navegador falar MQTT via WebSocket -->
+  <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #f4f1ec;
+      color: #2b2620;
+    }
+    main { max-width: 420px; margin: 0 auto; padding: 24px 16px 40px; }
+    h1 { font-size: 1.5rem; margin: 0 0 4px; }
+    .sub { margin: 0 0 20px; color: #6b6259; font-size: .9rem; }
+    .card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+    .rotulo { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: #6b6259; margin: 0 0 6px; }
+    .valor { font-size: 1.4rem; font-weight: 700; margin: 0; }
+    .grande { font-size: 2.6rem; }
+    .aviso { margin: 6px 0 0; font-weight: 600; }
+    .vazio .valor, .vazio .aviso { color: #c0392b; }
+    button {
+      width: 100%;
+      padding: 18px;
+      font-size: 1.15rem;
+      font-weight: 700;
+      border: none;
+      border-radius: 14px;
+      background: #2f7d4f;
+      color: #fff;
+      cursor: pointer;
+    }
+    button:disabled { background: #b9b2a8; cursor: not-allowed; }
+    #mensagem { min-height: 1.4em; text-align: center; margin: 10px 0 0; color: #6b6259; }
+    footer { margin-top: 24px; font-size: .8rem; color: #6b6259; text-align: center; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>🐶 Alimentador</h1>
+  <p class="sub">Painel de controle via MQTT</p>
+
+  <section class="card">
+    <p class="rotulo">Alimentador</p>
+    <p class="valor" id="status">Aguardando…</p>
+  </section>
+
+  <section class="card" id="cardNivel">
+    <p class="rotulo">Ração no reservatório</p>
+    <p class="valor grande" id="nivel">--</p>
+    <p class="aviso" id="avisoNivel">Sem leitura ainda</p>
+  </section>
+
+  <section class="card">
+    <p class="rotulo">Saída de ração (servo)</p>
+    <p class="valor" id="estado">Desconhecido</p>
+  </section>
+
+  <button id="botao" disabled>Liberar ração</button>
+  <p id="mensagem" aria-live="polite"></p>
+
+  <footer>
+    <span id="conexao">Conectando ao broker…</span><br>
+    Última leitura: <span id="atualizado">--</span>
+  </footer>
+</main>
+
+<script>
+  // ---------- Configuração (sem segredos: o broker público não usa senha) ----------
+  const BROKER_URL  = "wss://broker.hivemq.com:8884/mqtt";  // WebSocket seguro
+  const TOPICO_BASE = "alimentador/equipe-xxxx";            // IGUAL ao config.h do ESP32
+
+  const TOPICOS = {
+    nivel:   TOPICO_BASE + "/nivel",
+    estado:  TOPICO_BASE + "/estado",
+    status:  TOPICO_BASE + "/status",
+    comando: TOPICO_BASE + "/comando",
+  };
+
+  // ---------- Estado da página ----------
+  let paginaConectada = false;
+  let dispositivoOnline = false;
+  let liberando = false;
+
+  const el = (id) => document.getElementById(id);
+
+  // O botão só funciona se a página e o ESP32 estiverem conectados
+  // e se o servo não estiver no meio de uma liberação.
+  function atualizarBotao() {
+    el("botao").disabled = !(paginaConectada && dispositivoOnline && !liberando);
+  }
+
+  // ---------- Conexão com o broker ----------
+  const cliente = mqtt.connect(BROKER_URL, {
+    clientId: "dashboard-" + Math.random().toString(16).slice(2, 10),
+    reconnectPeriod: 3000,  // reconecta sozinho a cada 3 s se cair
+  });
+
+  cliente.on("connect", () => {
+    paginaConectada = true;
+    el("conexao").textContent = "Painel conectado ao broker";
+    cliente.subscribe([TOPICOS.nivel, TOPICOS.estado, TOPICOS.status]);
+    atualizarBotao();
+  });
+
+  cliente.on("reconnect", () => {
+    el("conexao").textContent = "Reconectando ao broker…";
+  });
+
+  cliente.on("close", () => {
+    paginaConectada = false;
+    el("conexao").textContent = "Painel sem conexão com o broker";
+    atualizarBotao();
+  });
+
+  // ---------- Mensagens vindas do ESP32 ----------
+  cliente.on("message", (topico, payload) => {
+    const texto = payload.toString();
+
+    if (topico === TOPICOS.nivel) {
+      const vazio = (texto === "Vazio");
+      el("nivel").textContent = texto;   // "Cheio" ou "Vazio"
+      el("avisoNivel").textContent = vazio ? "Reabasteça a garrafa." : "Tem ração.";
+      el("cardNivel").classList.toggle("vazio", vazio);
+      el("atualizado").textContent = new Date().toLocaleTimeString("pt-BR");
+    }
+
+    if (topico === TOPICOS.estado) {
+      el("estado").textContent = texto;   // "Fechado" ou "Liberando ração"
+      liberando = texto.startsWith("Liberando");
+      if (!liberando) el("mensagem").textContent = "";
+      atualizarBotao();
+    }
+
+    if (topico === TOPICOS.status) {
+      dispositivoOnline = (texto === "online");
+      el("status").textContent = dispositivoOnline ? "🟢 Online" : "🔴 Offline";
+      atualizarBotao();
+    }
+  });
+
+  // ---------- Comando para o ESP32 ----------
+  el("botao").addEventListener("click", () => {
+    // retain: false. Se fosse true, o ESP32 receberia "liberar" de novo
+    // toda vez que reconectasse e soltaria ração sem ninguém pedir.
+    cliente.publish(TOPICOS.comando, "liberar", { qos: 1, retain: false });
+    el("mensagem").textContent = "Comando enviado. Aguardando o alimentador…";
+    el("botao").disabled = true;
+
+    // Se em 5 s o ESP32 não responder com um novo estado, libera o botão de novo.
+    setTimeout(() => {
+      if (!liberando && el("mensagem").textContent.startsWith("Comando enviado")) {
+        el("mensagem").textContent = "O alimentador não respondeu. Tente de novo.";
+        atualizarBotao();
+      }
+    }, 5000);
+  });
+</script>
+</body>
+</html>
